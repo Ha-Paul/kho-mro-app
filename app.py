@@ -486,3 +486,38 @@ with main_tab2:
       )
     except Exception as e:
       st.error(f"Không thể tải file báo cáo: {e}")
+
+      # =========================================================
+# 3. KẾT NỐI POWER QUERY DÙNG CHO EXCEL (TẠO FILE CSV TĨNH)
+# =========================================================
+# Mỗi khi app chạy hoặc có thao tác Nhập/Xuất, ghi đè file mro_export.csv
+try:
+    conn = get_connection()
+    df_export = pd.read_sql_query("SELECT * FROM inventory", conn)
+    conn.close()
+    
+    # Ghi file CSV ra thư mục làm việc để Streamlit public hoặc đọc trực tiếp
+    df_export.to_csv("mro_export.csv", index=False, encoding='utf-8-sig')
+except Exception as e:
+    pass
+
+# =========================================================
+# 4. KẾT NỐI POWER QUERY DÙNG CHO EXCEL
+# =========================================================
+query_params = st.query_params
+
+if query_params.get("export") == "csv":
+    conn = get_connection()
+    try:
+        df_export = pd.read_sql_query("SELECT * FROM inventory", conn)
+    except Exception:
+        df_export = pd.DataFrame()
+    finally:
+        conn.close()
+    
+    # Chuyển đổi dữ liệu sang CSV mã hóa UTF-8 chuẩn cho Excel
+    csv_data = df_export.to_csv(index=False, encoding='utf-8-sig')
+    
+    # Hiển thị dữ liệu dạng Code Block thuần để Power Query bóc tách
+    st.code(csv_data, language="text")
+    st.stop()
