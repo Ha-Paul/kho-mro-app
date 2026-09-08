@@ -1,368 +1,487 @@
-import io
-import sqlite3
 from datetime import datetime
+import os
+import openpyxl
 import pandas as pd
 import streamlit as st
 
-# =========================================================
-# 1. CẤU HÌNH TRANG WEB
-# =========================================================
+# ==========================================
+# 1. CẤU HÌNH TRANG WEB & GIAO DIỆN CHUẨN TPS
+# ==========================================
 st.set_page_config(
-    page_title="Hệ Thống Quản Lý Kho MRO - Forming",
-    page_icon="⚙️",
+    page_title="Hệ Thống Quản Lý Sản Xuất & MRO (TPS Standard)",
+    page_icon="🏭",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# =========================================================
-# 2. KHỞI TẠO VÀ KẾT NỐI FILE CSDL (mro_production.db)
-# =========================================================
-DB_FILE = "mro_production.db"
+st.markdown(
+    """
+    <style>
+    .main { background-color: #f8f9fa; }
+    div.stButton > button:first-child {
+        background-color: #0056b3;
+        color: white;
+        border-radius: 4px;
+        font-weight: bold;
+        border: none;
+        padding: 0.5rem 1rem;
+        width: 100%;
+    }
+    div.stButton > button:first-child:hover {
+        background-color: #004085;
+        color: white;
+    }
+    .metric-card {
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 8px;
+        border-left: 5px solid #0056b3;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        margin-bottom: 10px;
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
 
-def get_connection():
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
+# ==========================================
+# 2. XỬ LÝ DỮ LIỆU EXCEL (BẢO VỆ DATA HIỆN CÓ)
+# ==========================================
+EXCEL_FILE = "danh_muc_mro.xlsx"
 
-def check_and_update_schema():
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS inventory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_num TEXT UNIQUE NOT NULL,
-                item_name TEXT DEFAULT '',
-                name_vie TEXT DEFAULT '',
-                ton_kho INTEGER DEFAULT 0,
-                min_safety INTEGER DEFAULT 0,
-                location TEXT DEFAULT ''
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                type TEXT,
-                item_num TEXT,
-                item_name TEXT,
-                name_vie TEXT,
-                quantity INTEGER,
-                operator TEXT,
-                note TEXT
-            )
-        """)
-        conn.commit()
-    except Exception as e:
-        st.error(f"Lỗi cấu trúc CSDL: {e}")
-    finally:
-        conn.close()
 
-check_and_update_schema()
+def load_data():
+  """Đọc dữ liệu từ file Excel.
 
-# =========================================================
-# 3. HÀM TỰ ĐỘNG BẮT TÊN CỘT THÔNG MINH
-# =========================================================
-def get_item_names(row):
-    """Trích xuất Tên ENG và Tên VIE từ bất kỳ tên cột nào có trong DB"""
-    eng = ""
-    vie = ""
-    
-    # Tìm cột Tên Tiếng Anh
-    for col in ['item_name', 'name_eng', 'description', 'eng_name', 'ten_eng']:
-        if col in row.index and pd.notna(row[col]) and str(row[col]).strip() != "":
-            eng = str(row[col])
-            break
-            
-    # Tìm cột Tên Tiếng Việt
-    for col in ['name_vie', 'ten_vie', 'vietnamese_name', 'description_vie', 'ten_hang']:
-        if col in row.index and pd.notna(row[col]) and str(row[col]).strip() != "":
-            vie = str(row[col])
-            break
-            
-    # Nếu không thấy VIE thì lấy tạm ENG làm tên chung và ngược lại
-    if not eng and vie: eng = vie
-    if not vie and eng: vie = eng
-    
-    return eng, vie
+  Nếu file đã có sẵn dữ liệu thì giữ nguyên 100%, chỉ bổ sung các sheet thiếu.
+  """
+  # 1. Nếu chưa có file Excel nào, tạo mới file mẫu
+  if not os.path.exists(EXCEL_FILE):
+    df_dm = pd.DataFrame(
+        columns=["Item#", "Mã hàng", "Tên ENG", "Tên VIE", "Đơn vị tính"]
+    )
+    df_nhap = pd.DataFrame(
+        columns=[
+            "Ngày tháng",
+            "Item#",
+            "Mã hàng",
+            "Tên ENG",
+            "Tên VIE",
+            "Đơn vị tính",
+            "Số lượng nhập",
+            "Người nhập",
+            "Ghi chú",
+        ]
+    )
+    df_xuat = pd.DataFrame(
+        columns=[
+            "Ngày tháng",
+            "Item#",
+            "Mã hàng",
+            "Tên ENG",
+            "Tên VIE",
+            "Đơn vị tính",
+            "Số lượng xuất",
+            "Người xuất",
+            "Ghi chú/Máy",
+        ]
+    )
 
-# =========================================================
-# 4. KẾT NỐI POWER QUERY DÙNG CHO EXCEL (Xử lý ngầm)
-# =========================================================
-query_params = st.query_params
+    with pd.ExcelWriter(EXCEL_FILE, engine="openpyxl") as writer:
+      df_dm.to_excel(writer, sheet_name="DanhMuc", index=False)
+      df_nhap.to_excel(writer, sheet_name="NhapKho", index=False)
+      df_xuat.to_excel(writer, sheet_name="XuatKho", index=False)
+    return df_dm, df_nhap, df_xuat
 
-if query_params.get("export") == "csv":
-    conn = get_connection()
-    df_export = pd.read_sql_query("SELECT * FROM inventory", conn)
-    conn.close()
-    st.text(df_export.to_csv(index=False))
-    st.stop()
+  # 2. Nếu file đã tồn tại -> Đọc danh sách sheet để bổ sung nếu thiếu
+  wb = openpyxl.load_workbook(EXCEL_FILE)
+  sheets = wb.sheetnames
 
-# =========================================================
-# 5. TRUY VẤN DỮ LIỆU TỔNG QUAN
-# =========================================================
-conn = get_connection()
-try:
-    df_inventory = pd.read_sql_query("SELECT * FROM inventory", conn)
-except Exception:
-    df_inventory = pd.DataFrame()
+  # Nếu sheet 'DanhMuc' chưa đúng tên (vd: Sheet1), kiểm tra và đổi tên hoặc dùng sheet đầu tiên
+  target_sheet = "DanhMuc"
+  if "DanhMuc" not in sheets:
+    target_sheet = sheets[0]  # Lấy sheet đầu tiên chứa danh mục của bạn
 
-try:
-    df_history = pd.read_sql_query("SELECT * FROM history ORDER BY id DESC", conn)
-except Exception:
-    df_history = pd.DataFrame()
-conn.close()
+  # Đọc sheet Danh Mục
+  df_dm = pd.read_excel(
+      EXCEL_FILE, sheet_name=target_sheet, dtype={"Item#": str}
+  )
 
-total_sku = len(df_inventory)
-low_stock = 0
-if not df_inventory.empty and 'ton_kho' in df_inventory.columns:
-    min_col = 'min_safety' if 'min_safety' in df_inventory.columns else 'ton_kho'
-    low_stock = len(df_inventory[df_inventory['ton_kho'] <= df_inventory[min_col]])
+  # Đảm bảo các cột tối thiểu
+  for col in ["Item#", "Mã hàng", "Tên ENG", "Tên VIE", "Đơn vị tính"]:
+    if col not in df_dm.columns:
+      df_dm[col] = ""
 
-# Tính tổng nhập/xuất trong ngày
-today_str = datetime.now().strftime("%Y-%m-%d")
-today_in, today_out = 0, 0
-if not df_history.empty and 'timestamp' in df_history.columns:
-    df_today = df_history[df_history['timestamp'].str.startswith(today_str, na=False)]
-    today_in = df_today[df_today['type'] == 'NHẬP']['quantity'].sum() if not df_today.empty else 0
-    today_out = df_today[df_today['type'] == 'XUẤT']['quantity'].sum() if not df_today.empty else 0
+  # Tự động tạo sheet NhapKho nếu thiếu
+  if "NhapKho" in sheets:
+    df_nhap = pd.read_excel(
+        EXCEL_FILE, sheet_name="NhapKho", dtype={"Item#": str}
+    )
+  else:
+    df_nhap = pd.DataFrame(
+        columns=[
+            "Ngày tháng",
+            "Item#",
+            "Mã hàng",
+            "Tên ENG",
+            "Tên VIE",
+            "Đơn vị tính",
+            "Số lượng nhập",
+            "Người nhập",
+            "Ghi chú",
+        ]
+    )
+    with pd.ExcelWriter(
+        EXCEL_FILE, engine="openpyxl", mode="a", if_sheet_exists="replace"
+    ) as writer:
+      df_nhap.to_excel(writer, sheet_name="NhapKho", index=False)
 
-# =========================================================
-# 6. GIAO DIỆN CHÍNH (BANNER & KPI)
-# =========================================================
-st.markdown("""
-    <div style="background-color: #0d1117; padding: 18px 25px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-        <div>
-            <h2 style="margin:0; font-size: 22px; color: #ffffff; font-weight: 700;">⚙️ HỆ THỐNG QUẢN LÝ KHO MRO - FORMING</h2>
-            <p style="margin:4px 0 0 0; color: #8b949e; font-size: 12px; font-weight: 500;">
-                QUẢN LÝ TRỰC QUAN (VISUAL MANAGEMENT) | BẢNG KANBAN KHO PRODUCTION
-            </p>
-        </div>
-        <div>
-            <span style="background-color: #1f6beb; color: white; padding: 5px 12px; border-radius: 20px; font-size: 11px; font-weight: bold;">SYSTEM LIVE</span>
-        </div>
-    </div>
-""", unsafe_allow_html=True)
+  # Tự động tạo sheet XuatKho nếu thiếu
+  if "XuatKho" in sheets:
+    df_xuat = pd.read_excel(
+        EXCEL_FILE, sheet_name="XuatKho", dtype={"Item#": str}
+    )
+  else:
+    df_xuat = pd.DataFrame(
+        columns=[
+            "Ngày tháng",
+            "Item#",
+            "Mã hàng",
+            "Tên ENG",
+            "Tên VIE",
+            "Đơn vị tính",
+            "Số lượng xuất",
+            "Người xuất",
+            "Ghi chú/Máy",
+        ]
+    )
+    with pd.ExcelWriter(
+        EXCEL_FILE, engine="openpyxl", mode="a", if_sheet_exists="replace"
+    ) as writer:
+      df_xuat.to_excel(writer, sheet_name="XuatKho", index=False)
 
-col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+  wb.close()
+  return df_dm, df_nhap, df_xuat
 
-with col_kpi1:
-    st.markdown(f"""
-        <div style="border-left: 4px solid #1f6beb; background: #ffffff; padding: 12px 16px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-            <div style="font-size: 11px; color: #57606a; font-weight: bold; text-transform: uppercase;">TỔNG DANH MỤC MRO</div>
-            <div style="font-size: 22px; font-weight: bold; color: #000; margin-top: 4px;">{total_sku} <span style="font-size: 13px; color: #57606a; font-weight: normal;">SKU</span></div>
-        </div>
-    """, unsafe_allow_html=True)
 
-with col_kpi2:
-    st.markdown(f"""
-        <div style="border-left: 4px solid #cf222e; background: #ffffff; padding: 12px 16px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-            <div style="font-size: 11px; color: #57606a; font-weight: bold; text-transform: uppercase;">CẢNH BÁO TỒN THẤP (KANBAN)</div>
-            <div style="font-size: 22px; font-weight: bold; color: #cf222e; margin-top: 4px;">{low_stock} <span style="font-size: 13px; color: #57606a; font-weight: normal;">Item</span></div>
-        </div>
-    """, unsafe_allow_html=True)
+def save_sheet(df, sheet_name):
+  """Lưu một DataFrame vào Sheet cụ thể trong file Excel."""
+  with pd.ExcelWriter(
+      EXCEL_FILE, engine="openpyxl", mode="a", if_sheet_exists="replace"
+  ) as writer:
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-with col_kpi3:
-    st.markdown(f"""
-        <div style="border-left: 4px solid #1a7f37; background: #ffffff; padding: 12px 16px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-            <div style="font-size: 11px; color: #57606a; font-weight: bold; text-transform: uppercase;">NHẬP TRONG NGÀY</div>
-            <div style="font-size: 22px; font-weight: bold; color: #1a7f37; margin-top: 4px;">+{today_in} <span style="font-size: 13px; color: #57606a; font-weight: normal;">Pcs</span></div>
-        </div>
-    """, unsafe_allow_html=True)
 
-with col_kpi4:
-    st.markdown(f"""
-        <div style="border-left: 4px solid #d97706; background: #ffffff; padding: 12px 16px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-            <div style="font-size: 11px; color: #57606a; font-weight: bold; text-transform: uppercase;">XUẤT TRONG NGÀY</div>
-            <div style="font-size: 22px; font-weight: bold; color: #d97706; margin-top: 4px;">-{today_out} <span style="font-size: 13px; color: #57606a; font-weight: normal;">Pcs</span></div>
-        </div>
-    """, unsafe_allow_html=True)
+df_dm, df_nhap, df_xuat = load_data()
 
-st.markdown("<br>", unsafe_allow_html=True)
+# ==========================================
+# 3. GIAO DIỆN CHÍNH (MAIN TABS)
+# ==========================================
+st.title("🏭 HỆ THỐNG QUẢN LÝ SẢN XUẤT & LOGISTICS")
 
-# =========================================================
-# 7. QUẢN LÝ TAB BẢNG ĐIỀU KHIỂN
-# =========================================================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 TỒN KHO REALTIME & KANBAN", 
-    "📥 NHẬP KHO (INBOUND)", 
-    "📤 XUẤT KHO (OUTBOUND)", 
-    "📜 LỊCH SỬ GIAO DỊCH"
+main_tab1, main_tab2 = st.tabs([
+    "📊 QUẢN LÝ SẢN XUẤT",
+    "⚙️ HỆ THỐNG QUẢN LÝ MRO - FORMING (Tiêu chuẩn TPS)",
 ])
 
-# ---------------------------------------------------------
-# TAB 1: TỒN KHO REALTIME + TÌM KIẾM
-# ---------------------------------------------------------
-with tab1:
-    st.subheader("📋 Bảng Tổng Hợp Tồn Kho")
-    search_stock = st.text_input("🔍 Tìm kiếm Mã hàng, Tên ENG hoặc Tên VIE...", key="search_stock")
-    
-    df_stock_display = df_inventory.copy()
-    if search_stock and not df_stock_display.empty:
-        # Tìm kiếm không phân biệt chữ hoa/thường trên mọi cột
-        mask = df_stock_display.astype(str).apply(lambda x: x.str.contains(search_stock, case=False, na=False)).any(axis=1)
-        df_stock_display = df_stock_display[mask]
-    
-    st.dataframe(df_stock_display, use_container_width=True)
-    
-    st.markdown("---")
-    st.subheader("🔗 Kết nối & Tải dữ liệu")
-    col_d1, col_d2 = st.columns(2)
-    
-    with col_d1:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_inventory.to_excel(writer, index=False, sheet_name='Inventory')
-        excel_data = output.getvalue()
+# ------------------------------------------
+# TAB 1: QUẢN LÝ SẢN XUẤT
+# ------------------------------------------
+with main_tab1:
+  st.header("CHƯƠNG TRÌNH QUẢN LÝ SẢN XUẤT TỔNG THỂ")
+  st.info(
+      "📌 Tab Quản lý sản xuất tổng quan: Theo dõi chỉ số OEE, Tiến độ sản xuất"
+      " Real-time, Kế hoạch & Sản lượng."
+  )
 
-        st.download_button(
-            label="📥 Tải Báo Cáo Excel (.xlsx)",
-            data=excel_data,
-            file_name="mro_production_report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-    with col_d2:
-        st.info("💡 **Dùng Power Query:** Thêm `/?export=csv` vào cuối đường dẫn trang web này để dán vào Excel (*Data -> From Web*).")
+  col1, col2, col3, col4 = st.columns(4)
+  with col1:
+    st.metric(
+        label="Hiệu suất chung (OEE)", value="85.4%", delta="1.2% (Tăng)"
+    )
+  with col2:
+    st.metric(
+        label="Sản lượng Kế hoạch", value="12,000 Pcs", delta="Đúng tiến độ"
+    )
+  with col3:
+    st.metric(
+        label="Sản lượng Thực tế", value="10,250 Pcs", delta="-1,750 Pcs"
+    )
+  with col4:
+    st.metric(label="Tỷ lệ Lỗi (NG Rate)", value="0.42%", delta="-0.05% (Tốt)")
 
-# ---------------------------------------------------------
-# TAB 2: NHẬP KHO (INBOUND)
-# ---------------------------------------------------------
-with tab2:
-    st.subheader("📥 THÔNG TIN PHIẾU NHẬP KHO MRO")
-    
+  st.divider()
+  st.subheader("Trạng thái Dây chuyền Sản xuất (Visual Management)")
+  cols_line = st.columns(3)
+  lines = [
+      {"name": "Line Forming 01", "status": "Đang chạy", "color": "green"},
+      {"name": "Line Forming 02", "status": "Đang Bảo trì", "color": "orange"},
+      {"name": "Line Forming 03", "status": "Đang chạy", "color": "green"},
+  ]
+  for idx, line in enumerate(lines):
+    with cols_line[idx]:
+      st.markdown(f"""
+            <div class="metric-card">
+                <h4>{line['name']}</h4>
+                <p>Trạng thái: <b><span style="color:{line['color']};">{line['status']}</span></b></p>
+            </div>
+            """, unsafe_allow_html=True)
+
+# ------------------------------------------
+# TAB 2: HỆ THỐNG QUẢN LÝ MRO - FORMING (TPS)
+# ------------------------------------------
+with main_tab2:
+  st.header("⚙️ QUẢN LÝ MRO - XƯỞNG FORMING")
+  st.caption(
+      "Chuẩn hóa nguyên tắc TPS: Loại bỏ lãng phí (Muda) - Tự động hóa"
+      " (Jidoka) - Đúng thời điểm (JIT)"
+  )
+
+  mro_tab1, mro_tab2, mro_tab3 = st.tabs(
+      ["📥 NHẬP KHO", "📤 XUẤT KHO", "📦 TỒN KHO"]
+  )
+
+  item_list = df_dm["Item#"].astype(str).dropna().tolist()
+
+  # ------------------------------------------
+  # SUB-TAB 1: NHẬP KHO
+  # ------------------------------------------
+  with mro_tab1:
+    st.subheader("Nhập phụ tùng / Vật tư MRO")
+
+    with st.expander("➕ Thêm mới Mã hàng/Item# vào Danh mục MRO"):
+      with st.form("form_add_new_item", clear_on_submit=True):
+        c1, c2, c3, c4, c5 = st.columns(5)
+        new_item = c1.text_input("Item# mới (*)")
+        new_ma = c2.text_input("Mã hàng (*)")
+        new_eng = c3.text_input("Tên ENG")
+        new_vie = c4.text_input("Tên VIE (*)")
+        new_dvt = c5.selectbox("Đơn vị tính (*)", options=["PCS", "SET"])
+
+        btn_add = st.form_submit_button("Lưu Mã Hàng Mới")
+        if btn_add:
+          if not new_item or not new_ma or not new_vie:
+            st.error("❌ Vui lòng điền đầy đủ các thông tin bắt buộc (*)")
+          elif new_item.strip() in df_dm["Item#"].astype(str).values:
+            st.warning(f"⚠️ Item# [{new_item}] đã tồn tại trong Hệ thống!")
+          else:
+            new_row = pd.DataFrame([{
+                "Item#": str(new_item).strip(),
+                "Mã hàng": new_ma,
+                "Tên ENG": new_eng,
+                "Tên VIE": new_vie,
+                "Đơn vị tính": new_dvt,
+            }])
+            df_dm = pd.concat([df_dm, new_row], ignore_index=True)
+            save_sheet(df_dm, "DanhMuc")
+            st.success(f"✅ Đã thêm thành công Item# [{new_item}]!")
+            st.rerun()
+
+    st.divider()
+
+    col_i1, col_i2 = st.columns([1, 2])
+    with col_i1:
+      selected_item_nhap = st.selectbox(
+          "Chọn Item# (*)", options=[""] + item_list, key="select_nhap_item"
+      )
+
+    info_ma, info_eng, info_vie, info_dvt = "", "", "", "PCS"
+    if selected_item_nhap:
+      matched = df_dm[df_dm["Item#"].astype(str) == selected_item_nhap]
+      if not matched.empty:
+        info_ma = matched.iloc[0].get("Mã hàng", "")
+        info_eng = matched.iloc[0].get("Tên ENG", "")
+        info_vie = matched.iloc[0].get("Tên VIE", "")
+        info_dvt_val = str(matched.iloc[0].get("Đơn vị tính", "PCS")).upper()
+        if info_dvt_val in ["PCS", "SET"]:
+          info_dvt = info_dvt_val
+
+    st.info(
+        f"🔍 **Thông tin Vật tư:** Mã hàng: **{info_ma}** | Tên VIE:"
+        f" **{info_vie}** | Tên ENG: **{info_eng}**"
+    )
+
     with st.form("form_nhap_kho", clear_on_submit=False):
-        col_in1, col_in2 = st.columns(2)
-        
-        with col_in1:
-            selected_item_num = st.text_input("Mã Item# (*)", value="Sbd0001", help="Nhập mã item để tra cứu").strip()
-            
-            name_eng_val = ""
-            name_vie_val = ""
-            current_stock = 0
-            is_existing = False
-            
-            if selected_item_num and not df_inventory.empty:
-                # TÌM KIẾM KHÔNG PHÂN BIỆT HOA THƯỜNG (Case-insensitive)
-                match = df_inventory[df_inventory['item_num'].astype(str).str.lower() == selected_item_num.lower()]
-                
-                if not match.empty:
-                    matched_row = match.iloc[0]
-                    actual_item_num = matched_row['item_num']
-                    name_eng_val, name_vie_val = get_item_names(matched_row)
-                    current_stock = matched_row.get('ton_kho', 0)
-                    is_existing = True
-                    
-                    st.info(f"📌 **Mã Hàng:** {actual_item_num}\n\n🇬🇧 **Tên ENG:** {name_eng_val if name_eng_val else 'Chưa có thông tin'}\n\n🇻🇳 **Tên VIE:** {name_vie_val if name_vie_val else 'Chưa có thông tin'}\n\n📊 **Tồn kho hiện tại:** {current_stock} Pcs")
-            
-            if selected_item_num and not is_existing:
-                st.warning("✨ Mã Item này chưa có trong CSDL! Vui lòng nhập thông tin mã mới:")
-                name_eng_val = st.text_input("Tên Tiếng Anh (Name ENG) (*)", value="")
-                name_vie_val = st.text_input("Tên Tiếng Việt (Name VIE) (*)", value="")
-                
-            so_luong_nhap = st.number_input("Số lượng nhập (*)", min_value=1, value=1, step=1)
+      c_n1, c_n2, c_n3, c_n4 = st.columns(4)
+      nguoi_nhap = c_n1.text_input("Người nhập (*)")
+      so_luong_nhap = c_n2.number_input(
+          "Số lượng nhập (*)", min_value=1, step=1
+      )
+      dvt_nhap = c_n3.selectbox(
+          "Đơn vị tính (*)",
+          options=["PCS", "SET"],
+          index=0 if info_dvt == "PCS" else 1,
+      )
+      ngay_nhap = c_n4.date_input("Ngày nhập", value=datetime.now())
 
-        with col_in2:
-            nguoi_nhap = st.text_input("Người thực hiện / Nhân viên Kho")
-            location_note = st.text_input("Vị trí lưu kho (Location) / Ghi chú")
+      ghi_chu_nhap = st.text_area("Ghi chú nhập kho")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        btn_nhap = st.form_submit_button("💾 XÁC NHẬN NHẬP KHO", use_container_width=True)
+      submit_nhap = st.form_submit_button("XÁC NHẬN NHẬP KHO")
 
-        if btn_nhap:
-            if selected_item_num:
-                conn = get_connection()
-                cursor = conn.cursor()
-                
-                if is_existing:
-                    cursor.execute("UPDATE inventory SET ton_kho = ton_kho + ? WHERE LOWER(item_num) = LOWER(?)", (so_luong_nhap, selected_item_num))
-                else:
-                    cursor.execute("""
-                        INSERT INTO inventory (item_num, item_name, name_vie, ton_kho, min_safety, location)
-                        VALUES (?, ?, ?, ?, 5, ?)
-                    """, (selected_item_num, name_eng_val, name_vie_val, so_luong_nhap, location_note))
-                
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                cursor.execute("""
-                    INSERT INTO history (timestamp, type, item_num, item_name, name_vie, quantity, operator, note)
-                    VALUES (?, 'NHẬP', ?, ?, ?, ?, ?, ?)
-                """, (now_str, selected_item_num, name_eng_val, name_vie_val, so_luong_nhap, nguoi_nhap, location_note))
-                
-                conn.commit()
-                conn.close()
-                st.success(f"✅ Đã nhập thành công {so_luong_nhap} Pcs cho mã hàng: **{selected_item_num}**!")
-                st.rerun()
+      if submit_nhap:
+        if not selected_item_nhap:
+          st.error("❌ BẮT BUỘC: Vui lòng chọn Item#!")
+        elif not nguoi_nhap.strip():
+          st.error("❌ BẮT BUỘC: Ô 'Người nhập' không được để trống!")
+        else:
+          new_entry = pd.DataFrame([{
+              "Ngày tháng": ngay_nhap.strftime("%Y-%m-%d"),
+              "Item#": str(selected_item_nhap),
+              "Mã hàng": info_ma,
+              "Tên ENG": info_eng,
+              "Tên VIE": info_vie,
+              "Đơn vị tính": dvt_nhap,
+              "Số lượng nhập": so_luong_nhap,
+              "Người nhập": nguoi_nhap.strip(),
+              "Ghi chú": ghi_chu_nhap,
+          }])
+          df_nhap = pd.concat([df_nhap, new_entry], ignore_index=True)
+          save_sheet(df_nhap, "NhapKho")
+          st.success("✅ Ghi nhận Nhập kho thành công!")
+          st.rerun()
 
-# ---------------------------------------------------------
-# TAB 3: XUẤT KHO (OUTBOUND)
-# ---------------------------------------------------------
-with tab3:
-    st.subheader("📤 THÔNG TIN PHIẾU XUẤT KHO MRO")
-    
+  # ------------------------------------------
+  # SUB-TAB 2: XUẤT KHO
+  # ------------------------------------------
+  with mro_tab2:
+    st.subheader("Xuất phụ tùng / Vật tư MRO")
+
+    col_x1, col_x2 = st.columns([1, 2])
+    with col_x1:
+      selected_item_xuat = st.selectbox(
+          "Chọn Item# (*)", options=[""] + item_list, key="select_xuat_item"
+      )
+
+    info_ma_x, info_eng_x, info_vie_x, info_dvt_x = "", "", "", "PCS"
+    if selected_item_xuat:
+      matched_x = df_dm[df_dm["Item#"].astype(str) == selected_item_xuat]
+      if not matched_x.empty:
+        info_ma_x = matched_x.iloc[0].get("Mã hàng", "")
+        info_eng_x = matched_x.iloc[0].get("Tên ENG", "")
+        info_vie_x = matched_x.iloc[0].get("Tên VIE", "")
+        info_dvt_val_x = str(
+            matched_x.iloc[0].get("Đơn vị tính", "PCS")
+        ).upper()
+        if info_dvt_val_x in ["PCS", "SET"]:
+          info_dvt_x = info_dvt_val_x
+
+    st.info(
+        f"🔍 **Thông tin Vật tư:** Mã hàng: **{info_ma_x}** | Tên VIE:"
+        f" **{info_vie_x}** | Tên ENG: **{info_eng_x}**"
+    )
+
     with st.form("form_xuat_kho", clear_on_submit=False):
-        col_out1, col_out2 = st.columns(2)
-        
-        with col_out1:
-            if not df_inventory.empty:
-                # Tạo danh sách chọn linh hoạt
-                item_options = []
-                for _, row in df_inventory.iterrows():
-                    eng, vie = get_item_names(row)
-                    item_options.append(f"{row['item_num']} | ENG: {eng} | VIE: {vie}")
-                    
-                selected_item_out_str = st.selectbox("Mã Item# (*)", options=item_options, key="sb_out")
-                selected_item_num_out = selected_item_out_str.split(" | ")[0]
-                
-                matched_row_out = df_inventory[df_inventory['item_num'] == selected_item_num_out].iloc[0]
-                name_eng_out, name_vie_out = get_item_names(matched_row_out)
-                current_stock_out = matched_row_out.get('ton_kho', 0)
-                
-                st.info(f"📌 **Mã Hàng:** {selected_item_num_out}\n\n🇬🇧 **Tên ENG:** {name_eng_out}\n\n🇻🇳 **Tên VIE:** {name_vie_out}\n\n📊 **Tồn kho hiện tại:** {current_stock_out} Pcs")
-            else:
-                selected_item_num_out = st.text_input("Mã Item# (*)", value="", key="ti_out")
-                name_eng_out, name_vie_out = "", ""
-                current_stock_out = 0
-                st.warning("Chưa có dữ liệu danh mục kho!")
-                
-            so_luong_xuat = st.number_input("Số lượng xuất (*)", min_value=1, value=1, step=1)
+      c_x1, c_x2, c_x3, c_x4 = st.columns(4)
+      nguoi_xuat = c_x1.text_input("Người Xuất (*)")
+      so_luong_xuat = c_x2.number_input(
+          "Số lượng Xuất (*)", min_value=1, step=1
+      )
+      dvt_xuat = c_x3.selectbox(
+          "Đơn vị tính (*)",
+          options=["PCS", "SET"],
+          index=0 if info_dvt_x == "PCS" else 1,
+      )
+      ngay_xuat = c_x4.date_input("Ngày Xuất", value=datetime.now())
 
-        with col_out2:
-            nguoi_xuat = st.text_input("Người nhận / Bộ phận yêu cầu")
-            ghi_chu_xuat = st.text_input("Ghi chú xuất kho")
+      ghi_chu_xuat = st.text_input("Ghi chú / Mã Máy sử dụng")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        btn_xuat = st.form_submit_button("📤 XÁC NHẬN XUẤT KHO", use_container_width=True)
+      submit_xuat = st.form_submit_button("XÁC NHẬN XUẤT KHO")
 
-        if btn_xuat:
-            if selected_item_num_out and not df_inventory.empty:
-                if current_stock_out >= so_luong_xuat:
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    
-                    cursor.execute("UPDATE inventory SET ton_kho = ton_kho - ? WHERE item_num = ?", (so_luong_xuat, selected_item_num_out))
-                    
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute("""
-                        INSERT INTO history (timestamp, type, item_num, item_name, name_vie, quantity, operator, note)
-                        VALUES (?, 'XUẤT', ?, ?, ?, ?, ?, ?)
-                    """, (now_str, selected_item_num_out, name_eng_out, name_vie_out, so_luong_xuat, nguoi_xuat, ghi_chu_xuat))
-                    
-                    conn.commit()
-                    conn.close()
-                    st.success(f"✅ Đã xuất thành công {so_luong_xuat} Pcs cho mã hàng: {selected_item_num_out}")
-                    st.rerun()
-                else:
-                    st.error("❌ Số lượng tồn kho không đủ để xuất!")
+      if submit_xuat:
+        if not selected_item_xuat:
+          st.error("❌ BẮT BUỘC: Vui lòng chọn Item#!")
+        elif not nguoi_xuat.strip():
+          st.error("❌ BẮT BUỘC: Ô 'Người Xuất' không được để trống!")
+        else:
+          new_exit = pd.DataFrame([{
+              "Ngày tháng": ngay_xuat.strftime("%Y-%m-%d"),
+              "Item#": str(selected_item_xuat),
+              "Mã hàng": info_ma_x,
+              "Tên ENG": info_eng_x,
+              "Tên VIE": info_vie_x,
+              "Đơn vị tính": dvt_xuat,
+              "Số lượng xuất": so_luong_xuat,
+              "Người xuất": nguoi_xuat.strip(),
+              "Ghi chú/Máy": ghi_chu_xuat,
+          }])
+          df_xuat = pd.concat([df_xuat, new_exit], ignore_index=True)
+          save_sheet(df_xuat, "XuatKho")
+          st.success("✅ Ghi nhận Xuất kho thành công!")
+          st.rerun()
 
-# ---------------------------------------------------------
-# TAB 4: LỊCH SỬ GIAO DỊCH + BỘ LỌC TÌM KIẾM
-# ---------------------------------------------------------
-with tab4:
-    st.subheader("📜 Lịch Sử Giao Dịch Nhập / Xuất Kho")
-    
-    search_history = st.text_input("🔍 Tìm kiếm lịch sử...", key="search_history")
-    
-    df_his_display = df_history.copy()
-    if search_history and not df_his_display.empty:
-        mask = df_his_display.astype(str).apply(lambda x: x.str.contains(search_history, case=False, na=False)).any(axis=1)
-        df_his_display = df_his_display[mask]
-        
-    st.dataframe(df_his_display, use_container_width=True)
+  # ------------------------------------------
+  # SUB-TAB 3: TỒN KHO & TÌM KIẾM
+  # ------------------------------------------
+  with mro_tab3:
+    st.subheader("Báo cáo Tồn kho MRO Real-time")
+
+    df_ton = df_dm.copy()
+
+    if not df_nhap.empty and "Số lượng nhập" in df_nhap.columns:
+      sum_nhap = (
+          df_nhap.groupby("Item#")["Số lượng nhập"].sum().reset_index()
+      )
+      df_ton = pd.merge(df_ton, sum_nhap, on="Item#", how="left")
+      df_ton["Số lượng nhập"] = df_ton["Số lượng nhập"].fillna(0)
+    else:
+      df_ton["Số lượng nhập"] = 0
+
+    if not df_xuat.empty and "Số lượng xuất" in df_xuat.columns:
+      sum_xuat = (
+          df_xuat.groupby("Item#")["Số lượng xuất"].sum().reset_index()
+      )
+      df_ton = pd.merge(df_ton, sum_xuat, on="Item#", how="left")
+      df_ton["Số lượng xuất"] = df_ton["Số lượng xuất"].fillna(0)
+    else:
+      df_ton["Số lượng xuất"] = 0
+
+    df_ton["Tồn kho khả dụng"] = (
+        df_ton["Số lượng nhập"] - df_ton["Số lượng xuất"]
+    )
+
+    search_kw = st.text_input(
+        "🔎 Tìm kiếm linh hoạt (Nhập Item#, Mã hàng, Tên ENG hoặc Tên VIE):", ""
+    )
+
+    if search_kw:
+      mask = (
+          df_ton["Item#"].astype(str).str.contains(search_kw, case=False)
+          | df_ton["Mã hàng"].astype(str).str.contains(search_kw, case=False)
+          | df_ton["Tên ENG"].astype(str).str.contains(search_kw, case=False)
+          | df_ton["Tên VIE"].astype(str).str.contains(search_kw, case=False)
+      )
+      df_display = df_ton[mask]
+    else:
+      df_display = df_ton
+
+    cols_to_show = [
+        col
+        for col in [
+            "Item#",
+            "Mã hàng",
+            "Tên ENG",
+            "Tên VIE",
+            "Đơn vị tính",
+            "Số lượng nhập",
+            "Số lượng xuất",
+            "Tồn kho khả dụng",
+        ]
+        if col in df_display.columns
+    ]
+
+    st.dataframe(
+        df_display[cols_to_show], use_container_width=True, hide_index=True
+    )
+
+    try:
+      with open(EXCEL_FILE, "rb") as f:
+        file_bytes = f.read()
+
+      st.download_button(
+          label="📥 Tải Báo Cáo Tồn Kho Excel",
+          data=file_bytes,
+          file_name=f"Bao_Cao_Ton_Kho_MRO_{datetime.now().strftime('%Y%m%d')}.xlsx",
+          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      )
+    except Exception as e:
+      st.error(f"Không thể tải file báo cáo: {e}")
