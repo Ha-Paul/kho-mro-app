@@ -14,75 +14,70 @@ st.set_page_config(
 )
 
 # =========================================================
-# 2. KHỞI TẠO VÀ XỬ LÝ CƠ SỞ DỮ LIỆU (SQLITE)
+# 2. KHỜI TẠO VÀ KẾT NỐI CƠ SỞ DỮ LIỆU CÓ SẴN (mro_production.db)
 # =========================================================
-DB_FILE = "inventory.db"
+DB_FILE = "mro_production.db"
 
 def get_connection():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
-def init_db():
+def check_and_update_schema():
+    """Kiểm tra và tự động bổ sung cột nếu file mro_production.db cũ còn thiếu"""
     conn = get_connection()
     cursor = conn.cursor()
-    # Tạo bảng inventory nếu chưa tồn tại
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_num TEXT UNIQUE NOT NULL,
-            item_name TEXT NOT NULL,
-            ton_kho INTEGER DEFAULT 0,
-            min_safety INTEGER DEFAULT 0,
-            location TEXT DEFAULT ''
-        )
-    """)
     
-    # Kiểm tra và tự động thêm cột min_safety nếu CSDL cũ chưa có
-    cursor.execute("PRAGMA table_info(inventory)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if "min_safety" not in columns:
-        cursor.execute("ALTER TABLE inventory ADD COLUMN min_safety INTEGER DEFAULT 0")
-    if "item_name" not in columns:
-        cursor.execute("ALTER TABLE inventory ADD COLUMN item_name TEXT DEFAULT ''")
+    # Kiểm tra danh sách cột trong bảng inventory
+    try:
+        cursor.execute("PRAGMA table_info(inventory)")
+        columns = [col[1] for col in cursor.fetchall()]
         
-    conn.commit()
-    conn.close()
+        if columns:
+            if "min_safety" not in columns:
+                cursor.execute("ALTER TABLE inventory ADD COLUMN min_safety INTEGER DEFAULT 0")
+            if "item_name" not in columns:
+                cursor.execute("ALTER TABLE inventory ADD COLUMN item_name TEXT DEFAULT ''")
+            if "location" not in columns:
+                cursor.execute("ALTER TABLE inventory ADD COLUMN location TEXT DEFAULT ''")
+            conn.commit()
+    except Exception as e:
+        st.error(f"Lỗi truy vấn CSDL: {e}")
+    finally:
+        conn.close()
 
-# Chạy khởi tạo CSDL
-init_db()
+# Kiểm tra cấu trúc CSDL
+check_and_update_schema()
 
 # =========================================================
-# 3. KẾT NỐI POWER QUERY DÙNG CHO EXCEL (Xử lý ngầm)
-# (Link sử dụng trong Power Query: https://your-app.streamlit.app/?export=csv)
+# 3. KẾT NỐI POWER QUERY DÙNG CHO EXCEL
+# (Link Power Query: https://your-app.streamlit.app/?export=csv)
 # =========================================================
 query_params = st.query_params
 
 if query_params.get("export") == "csv":
     conn = get_connection()
-    df_export = pd.read_sql_query("SELECT item_num, item_name, ton_kho, min_safety FROM inventory", conn)
+    df_export = pd.read_sql_query("SELECT * FROM inventory", conn)
     conn.close()
     
-    # Xuất thuần text CSV cho Excel đọc trực tiếp
+    # Xuất thuần văn bản CSV cho Excel Power Query đọc trực tiếp
     st.text(df_export.to_csv(index=False))
-    st.stop()  # Dừng tại đây, không tải giao diện web
+    st.stop()
 
 # =========================================================
-# 4. TRUY VẤN DỮ LIỆU TỔNG QUAN
+# 4. TRUY VẤN DỮ LIỆU TỪ MRO_PRODUCTION.DB
 # =========================================================
 conn = get_connection()
-df_inventory = pd.read_sql_query("SELECT * FROM inventory", conn)
+try:
+    df_inventory = pd.read_sql_query("SELECT * FROM inventory", conn)
+except Exception:
+    df_inventory = pd.DataFrame()
 conn.close()
 
-# Tính toán các chỉ số KPI
 total_sku = len(df_inventory)
-if not df_inventory.empty and 'min_safety' in df_inventory.columns:
-    low_stock = len(df_inventory[df_inventory['ton_kho'] <= df_inventory['min_safety']])
-else:
-    low_stock = 0
+low_stock = len(df_inventory[df_inventory['ton_kho'] <= df_inventory['min_safety']]) if not df_inventory.empty and 'min_safety' in df_inventory.columns else 0
 
 # =========================================================
 # 5. GIAO DIỆN CHÍNH (HEADER & KPI BANNER)
 # =========================================================
-# Banner Tiêu đề gốc
 st.markdown("""
     <div style="background-color: #0d1117; padding: 18px 25px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
         <div>
@@ -97,7 +92,6 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# 4 Thẻ KPI Thống kê
 col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
 
 with col_kpi1:
@@ -148,7 +142,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # TAB 1: TỒN KHO REALTIME & KANBAN
 # ---------------------------------------------------------
 with tab1:
-    st.subheader("📋 Bảng Tổng Hợp Tồn Kho")
+    st.subheader("📋 Bảng Tổng Hợp Tồn Kho từ mro_production.db")
     st.dataframe(df_inventory, use_container_width=True)
     
     st.markdown("---")
@@ -164,7 +158,7 @@ with tab1:
         st.download_button(
             label="📥 Tải Báo Cáo Excel (.xlsx)",
             data=excel_data,
-            file_name="mro_inventory_report.xlsx",
+            file_name="mro_production_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
@@ -172,33 +166,30 @@ with tab1:
         st.info("💡 **Dùng Power Query:** Thêm `/?export=csv` vào cuối đường dẫn trang web này để dán vào Excel (*Data -> From Web*).")
 
 # ---------------------------------------------------------
-# TAB 2: NHẬP KHO (INBOUND) - Sửa hiển thị Tên hàng/Mã hàng
+# TAB 2: NHẬP KHO (INBOUND)
 # ---------------------------------------------------------
 with tab2:
     st.subheader("📥 THÔNG TIN PHIẾU NHẬP KHO MRO")
+    
+    existing_items = df_inventory['item_num'].tolist() if not df_inventory.empty and 'item_num' in df_inventory.columns else []
     
     with st.form("form_nhap_kho", clear_on_submit=False):
         col_in1, col_in2 = st.columns(2)
         
         with col_in1:
-            if not df_inventory.empty:
-                # Danh sách dạng "Mã Item - Tên Item"
-                item_list = df_inventory.apply(lambda r: f"{r['item_num']} - {r.get('item_name', '')}", axis=1).tolist()
-                selected_item_str = st.selectbox("Mã Item# (*)", options=item_list)
-                
-                # Trích xuất Mã Item
-                selected_item_num = selected_item_str.split(" - ")[0]
-                
-                # Tra cứu thông tin Tên hàng & Tồn kho
+            selected_item_num = st.text_input("Mã Item# (*)", value="", help="Nhập mã item để tra cứu").strip()
+            
+            item_name_to_save = ""
+            if selected_item_num in existing_items:
                 matched_row = df_inventory[df_inventory['item_num'] == selected_item_num].iloc[0]
-                item_name_val = matched_row.get('item_name', 'N/A')
+                item_name_val = matched_row.get('item_name', 'Chưa có tên')
                 current_stock = matched_row.get('ton_kho', 0)
                 
-                # HIỂN THỊ TÊN HÀNG & TỒN KHO TRỰC QUAN
                 st.info(f"📌 **Tên hàng:** {item_name_val}\n\n📊 **Tồn kho hiện tại:** {current_stock} Pcs")
-            else:
-                selected_item_num = st.text_input("Mã Item# (*)", value="")
-                st.warning("Chưa có danh mục hàng trong CSDL!")
+                item_name_to_save = item_name_val
+            elif selected_item_num:
+                st.warning("✨ Mã Item này chưa có trong CSDL! Vui lòng nhập Tên hàng để khởi tạo:")
+                item_name_to_save = st.text_input("Tên hàng / Mô tả MRO (*)", value="")
                 
             so_luong_nhap = st.number_input("Số lượng nhập (*)", min_value=1, value=1, step=1)
 
@@ -213,10 +204,18 @@ with tab2:
             if selected_item_num:
                 conn = get_connection()
                 cursor = conn.cursor()
-                cursor.execute("UPDATE inventory SET ton_kho = ton_kho + ? WHERE item_num = ?", (so_luong_nhap, selected_item_num))
+                
+                if selected_item_num in existing_items:
+                    cursor.execute("UPDATE inventory SET ton_kho = ton_kho + ? WHERE item_num = ?", (so_luong_nhap, selected_item_num))
+                else:
+                    cursor.execute("""
+                        INSERT INTO inventory (item_num, item_name, ton_kho, min_safety, location)
+                        VALUES (?, ?, ?, 5, ?)
+                    """, (selected_item_num, item_name_to_save, so_luong_nhap, location_note))
+                    
                 conn.commit()
                 conn.close()
-                st.success(f"✅ Đã nhập thành công {so_luong_nhap} Pcs cho mã hàng: {selected_item_num}")
+                st.success(f"✅ Đã nhập thành công {so_luong_nhap} Pcs cho mã hàng: **{selected_item_num}**!")
                 st.rerun()
 
 # ---------------------------------------------------------
@@ -229,7 +228,7 @@ with tab3:
         col_out1, col_out2 = st.columns(2)
         
         with col_out1:
-            if not df_inventory.empty:
+            if not df_inventory.empty and 'item_num' in df_inventory.columns:
                 item_list_out = df_inventory.apply(lambda r: f"{r['item_num']} - {r.get('item_name', '')}", axis=1).tolist()
                 selected_item_out_str = st.selectbox("Mã Item# (*)", options=item_list_out, key="sb_out")
                 selected_item_num_out = selected_item_out_str.split(" - ")[0]
@@ -241,7 +240,7 @@ with tab3:
                 st.info(f"📌 **Tên hàng:** {item_name_out_val}\n\n📊 **Tồn kho hiện tại:** {current_stock_out} Pcs")
             else:
                 selected_item_num_out = st.text_input("Mã Item# (*)", value="", key="ti_out")
-                st.warning("Chưa có danh mục hàng trong CSDL!")
+                st.warning("Chưa có dữ liệu danh mục kho!")
                 
             so_luong_xuat = st.number_input("Số lượng xuất (*)", min_value=1, value=1, step=1)
 
@@ -253,7 +252,7 @@ with tab3:
         btn_xuat = st.form_submit_button("📤 XÁC NHẬN XUẤT KHO", use_container_width=True)
 
         if btn_xuat:
-            if selected_item_num_out:
+            if selected_item_num_out and not df_inventory.empty:
                 if current_stock_out >= so_luong_xuat:
                     conn = get_connection()
                     cursor = conn.cursor()
@@ -270,4 +269,4 @@ with tab3:
 # ---------------------------------------------------------
 with tab4:
     st.subheader("📜 Lịch Sử Giao Dịch Nhập / Xuất Kho")
-    st.info("Tính năng xem lại toàn bộ nhật ký giao dịch chi tiết.")
+    st.info("Nhật ký lịch sử thao tác giao dịch kho.")
