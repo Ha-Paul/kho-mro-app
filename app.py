@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # =========================================================
-# 2. KHỜI TẠO VÀ KẾT NỐI CƠ SỞ DỮ LIỆU CÓ SẴN (mro_production.db)
+# 2. KHỞI TẠO VÀ KẾT NỐI FILE CSDL (mro_production.db)
 # =========================================================
 DB_FILE = "mro_production.db"
 
@@ -22,34 +22,48 @@ def get_connection():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def check_and_update_schema():
-    """Kiểm tra và tự động bổ sung cột nếu file mro_production.db cũ còn thiếu"""
+    """Tự động kiểm tra và cấu hình các cột ENG / VIE / min_safety cho mro_production.db"""
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Kiểm tra danh sách cột trong bảng inventory
     try:
+        # Bắt buộc tạo bảng nếu CSDL chưa có
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_num TEXT UNIQUE NOT NULL,
+                item_name TEXT DEFAULT '',
+                name_vie TEXT DEFAULT '',
+                ton_kho INTEGER DEFAULT 0,
+                min_safety INTEGER DEFAULT 0,
+                location TEXT DEFAULT ''
+            )
+        """)
+        
+        # Bổ sung cột nếu file db hiện tại thiếu
         cursor.execute("PRAGMA table_info(inventory)")
         columns = [col[1] for col in cursor.fetchall()]
         
-        if columns:
-            if "min_safety" not in columns:
-                cursor.execute("ALTER TABLE inventory ADD COLUMN min_safety INTEGER DEFAULT 0")
-            if "item_name" not in columns:
-                cursor.execute("ALTER TABLE inventory ADD COLUMN item_name TEXT DEFAULT ''")
-            if "location" not in columns:
-                cursor.execute("ALTER TABLE inventory ADD COLUMN location TEXT DEFAULT ''")
-            conn.commit()
+        if "item_name" not in columns:
+            cursor.execute("ALTER TABLE inventory ADD COLUMN item_name TEXT DEFAULT ''")
+        if "name_vie" not in columns:
+            cursor.execute("ALTER TABLE inventory ADD COLUMN name_vie TEXT DEFAULT ''")
+        if "min_safety" not in columns:
+            cursor.execute("ALTER TABLE inventory ADD COLUMN min_safety INTEGER DEFAULT 0")
+        if "location" not in columns:
+            cursor.execute("ALTER TABLE inventory ADD COLUMN location TEXT DEFAULT ''")
+            
+        conn.commit()
     except Exception as e:
-        st.error(f"Lỗi truy vấn CSDL: {e}")
+        st.error(f"Lỗi kiểm tra cấu trúc CSDL: {e}")
     finally:
         conn.close()
 
-# Kiểm tra cấu trúc CSDL
 check_and_update_schema()
 
 # =========================================================
-# 3. KẾT NỐI POWER QUERY DÙNG CHO EXCEL
-# (Link Power Query: https://your-app.streamlit.app/?export=csv)
+# 3. KẾT NỐI POWER QUERY DÙNG CHO EXCEL (Xử lý ngầm)
+# (Đường dẫn dùng trong Power Query: https://your-app.streamlit.app/?export=csv)
 # =========================================================
 query_params = st.query_params
 
@@ -58,12 +72,12 @@ if query_params.get("export") == "csv":
     df_export = pd.read_sql_query("SELECT * FROM inventory", conn)
     conn.close()
     
-    # Xuất thuần văn bản CSV cho Excel Power Query đọc trực tiếp
+    # Trả về văn bản CSV sạch cho Excel
     st.text(df_export.to_csv(index=False))
     st.stop()
 
 # =========================================================
-# 4. TRUY VẤN DỮ LIỆU TỪ MRO_PRODUCTION.DB
+# 4. TRUY VẤN DỮ LIỆU TỔNG QUAN
 # =========================================================
 conn = get_connection()
 try:
@@ -76,7 +90,7 @@ total_sku = len(df_inventory)
 low_stock = len(df_inventory[df_inventory['ton_kho'] <= df_inventory['min_safety']]) if not df_inventory.empty and 'min_safety' in df_inventory.columns else 0
 
 # =========================================================
-# 5. GIAO DIỆN CHÍNH (HEADER & KPI BANNER)
+# 5. GIAO DIỆN CHÍNH (BANNER & KPI)
 # =========================================================
 st.markdown("""
     <div style="background-color: #0d1117; padding: 18px 25px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
@@ -92,6 +106,7 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
+# 4 Khối KPI Thống kê
 col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
 
 with col_kpi1:
@@ -129,7 +144,7 @@ with col_kpi4:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # =========================================================
-# 6. ĐIỀU HƯỚNG TABS
+# 6. QUẢN LÝ TAB BẢNG ĐIỀU KHIỂN
 # =========================================================
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 TỒN KHO REALTIME & KANBAN", 
@@ -139,10 +154,10 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# TAB 1: TỒN KHO REALTIME & KANBAN
+# TAB 1: TỒN KHO REALTIME
 # ---------------------------------------------------------
 with tab1:
-    st.subheader("📋 Bảng Tổng Hợp Tồn Kho từ mro_production.db")
+    st.subheader("📋 Bảng Tổng Hợp Tồn Kho (mro_production.db)")
     st.dataframe(df_inventory, use_container_width=True)
     
     st.markdown("---")
@@ -166,7 +181,7 @@ with tab1:
         st.info("💡 **Dùng Power Query:** Thêm `/?export=csv` vào cuối đường dẫn trang web này để dán vào Excel (*Data -> From Web*).")
 
 # ---------------------------------------------------------
-# TAB 2: NHẬP KHO (INBOUND)
+# TAB 2: NHẬP KHO (INBOUND) - HỖ TRỢ THÊM MÃ MỚI
 # ---------------------------------------------------------
 with tab2:
     st.subheader("📥 THÔNG TIN PHIẾU NHẬP KHO MRO")
@@ -177,19 +192,24 @@ with tab2:
         col_in1, col_in2 = st.columns(2)
         
         with col_in1:
-            selected_item_num = st.text_input("Mã Item# (*)", value="", help="Nhập mã item để tra cứu").strip()
+            selected_item_num = st.text_input("Mã Item# (*)", value="", help="Gõ mã item cũ hoặc gõ mã mới để khởi tạo").strip()
             
-            item_name_to_save = ""
+            name_eng_val = ""
+            name_vie_val = ""
+            
             if selected_item_num in existing_items:
+                # Nếu MÃ ĐÃ CÓ -> Tự động load Tên ENG & VIE + Tồn kho
                 matched_row = df_inventory[df_inventory['item_num'] == selected_item_num].iloc[0]
-                item_name_val = matched_row.get('item_name', 'Chưa có tên')
+                name_eng_val = matched_row.get('item_name', '')
+                name_vie_val = matched_row.get('name_vie', '')
                 current_stock = matched_row.get('ton_kho', 0)
                 
-                st.info(f"📌 **Tên hàng:** {item_name_val}\n\n📊 **Tồn kho hiện tại:** {current_stock} Pcs")
-                item_name_to_save = item_name_val
+                st.info(f"📌 **Tên Tiếng Anh (ENG):** {name_eng_val}\n\n🇻🇳 **Tên Tiếng Việt (VIE):** {name_vie_val}\n\n📊 **Tồn kho hiện tại:** {current_stock} Pcs")
             elif selected_item_num:
-                st.warning("✨ Mã Item này chưa có trong CSDL! Vui lòng nhập Tên hàng để khởi tạo:")
-                item_name_to_save = st.text_input("Tên hàng / Mô tả MRO (*)", value="")
+                # Nếu MÃ MỚI -> Cho phép nhập thêm Tên ENG và Tên VIE
+                st.warning("✨ Mã Item này chưa có trong CSDL! Vui lòng nhập thông tin mã hàng mới:")
+                name_eng_val = st.text_input("Tên Tiếng Anh (Name ENG) (*)", value="")
+                name_vie_val = st.text_input("Tên Tiếng Việt (Name VIE) (*)", value="")
                 
             so_luong_nhap = st.number_input("Số lượng nhập (*)", min_value=1, value=1, step=1)
 
@@ -206,12 +226,14 @@ with tab2:
                 cursor = conn.cursor()
                 
                 if selected_item_num in existing_items:
+                    # Cập nhật cộng thêm tồn kho
                     cursor.execute("UPDATE inventory SET ton_kho = ton_kho + ? WHERE item_num = ?", (so_luong_nhap, selected_item_num))
                 else:
+                    # Chèn mã hàng mới vào CSDL
                     cursor.execute("""
-                        INSERT INTO inventory (item_num, item_name, ton_kho, min_safety, location)
-                        VALUES (?, ?, ?, 5, ?)
-                    """, (selected_item_num, item_name_to_save, so_luong_nhap, location_note))
+                        INSERT INTO inventory (item_num, item_name, name_vie, ton_kho, min_safety, location)
+                        VALUES (?, ?, ?, ?, 5, ?)
+                    """, (selected_item_num, name_eng_val, name_vie_val, so_luong_nhap, location_note))
                     
                 conn.commit()
                 conn.close()
@@ -229,15 +251,20 @@ with tab3:
         
         with col_out1:
             if not df_inventory.empty and 'item_num' in df_inventory.columns:
-                item_list_out = df_inventory.apply(lambda r: f"{r['item_num']} - {r.get('item_name', '')}", axis=1).tolist()
+                # Danh sách chọn hiển thị cả Mã - Tên ENG - Tên VIE
+                item_list_out = df_inventory.apply(
+                    lambda r: f"{r['item_num']} - {r.get('item_name', '')} ({r.get('name_vie', '')})", axis=1
+                ).tolist()
+                
                 selected_item_out_str = st.selectbox("Mã Item# (*)", options=item_list_out, key="sb_out")
                 selected_item_num_out = selected_item_out_str.split(" - ")[0]
                 
                 matched_row_out = df_inventory[df_inventory['item_num'] == selected_item_num_out].iloc[0]
-                item_name_out_val = matched_row_out.get('item_name', 'N/A')
+                name_eng_out = matched_row_out.get('item_name', 'N/A')
+                name_vie_out = matched_row_out.get('name_vie', 'N/A')
                 current_stock_out = matched_row_out.get('ton_kho', 0)
                 
-                st.info(f"📌 **Tên hàng:** {item_name_out_val}\n\n📊 **Tồn kho hiện tại:** {current_stock_out} Pcs")
+                st.info(f"📌 **Tên ENG:** {name_eng_out}\n\n🇻🇳 **Tên VIE:** {name_vie_out}\n\n📊 **Tồn kho hiện tại:** {current_stock_out} Pcs")
             else:
                 selected_item_num_out = st.text_input("Mã Item# (*)", value="", key="ti_out")
                 st.warning("Chưa có dữ liệu danh mục kho!")
