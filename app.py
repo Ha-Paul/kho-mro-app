@@ -181,7 +181,7 @@ df_dm, df_nhap, df_xuat = load_data()
 st.title("🏭 HỆ THỐNG QUẢN LÝ SẢN XUẤT")
 
 main_tab1, main_tab2 = st.tabs([
-   # "📊 QUẢN LÝ SẢN XUẤT",
+   "📊 QUẢN LÝ SẢN XUẤT",
     "⚙️ HỆ THỐNG QUẢN LÝ MRO - FORMING",
 ])
 
